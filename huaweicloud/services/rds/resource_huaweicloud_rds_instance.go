@@ -534,7 +534,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	az1 := instance.Nodes[0].AvailabilityZone
 	//QA: falvor带ha后缀的需要判断是否大于两个availability zone? 我们为什么要加这个逻辑？主要是为了使az的值有序？
 	// 去掉这部分逻辑？
-	//QA:如果接口默认遵循的是第一个是主分区，（也就是说az里边的顺序是有意义的）我们如果改成set就失去了这种默认能力
+	//QA:如果接口默认遵循的是第一个是主分区，（也就是说az里边的顺序是有意义的）我们如果改成set就失去了这种默认能力, 如果第一个是自主分区那（A,B）和（B,A）应该是不同的
 	if strings.HasSuffix(d.Get("flavor").(string), ".ha") {
 		if len(instance.Nodes) < 2 {
 			return diag.Errorf("error saving availability zone to RDS instance (%s): "+
