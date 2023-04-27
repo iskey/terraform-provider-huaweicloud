@@ -24,6 +24,20 @@ import (
 )
 
 // ResourceRdsInstance is the impl for huaweicloud_rds_instance resource
+/*
+QA:
+缺少参数：
+创建实例：
+请求参数：
+[dsspool_id](https://support.huaweicloud.com/api-rds/rds_01_0002.html#:~:text=UTC%2B08%3A30%E3%80%82-,dsspool_id,-%E5%90%A6)
+[restore_point](https://support.huaweicloud.com/api-rds/rds_01_0002.html#rds_01_0002__table64243102:~:text=%E7%94%A8%E9%80%97%E5%8F%B7%E9%9A%94%E5%BC%80%E3%80%82-,restore_point,-%E5%90%A6)
+返回值：
+[complete_version](https://support.huaweicloud.com/api-rds/rds_01_0002.html#rds_01_0002__table64243102:~:text=%E7%89%88%E6%9C%AC%E6%8E%A5%E5%8F%A3%E8%8E%B7%E5%8F%96%E3%80%82-,complete_version,-%E5%90%A6)
+*/
+
+//QA: 没有分页处理？ 查询数据库列表接口里边有分页，offset等
+//QA: 数据实例分为单实例，HA实例，只读副本，只读副本是read_replica_instance资源，单实例和HA实例，是否通过ha字段来区分？
+//QA: 如何指定主分区和备份分区？
 func ResourceRdsInstance() *schema.Resource {
 	return &schema.Resource{
 		CreateContext: resourceRdsInstanceCreate,
@@ -69,6 +83,7 @@ func ResourceRdsInstance() *schema.Resource {
 			},
 
 			"db": {
+				// QA: 这里用了列表，但是只支持一个？
 				Type:     schema.TypeList,
 				Required: true,
 				ForceNew: true,
@@ -151,6 +166,7 @@ func ResourceRdsInstance() *schema.Resource {
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
+						//QA: 这里的时间会叠加传入的时区，查到的返回值应该使用传入的time_zone进行处理
 						"start_time": {
 							Type:     schema.TypeString,
 							Required: true,
@@ -198,6 +214,7 @@ func ResourceRdsInstance() *schema.Resource {
 				ForceNew: true,
 			},
 
+			//QA: 调用数据库安全性接口
 			"ssl_enable": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -306,6 +323,7 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 		SecurityGroupId:     d.Get("security_group_id").(string),
 		ConfigurationId:     d.Get("param_group_id").(string),
 		TimeZone:            d.Get("time_zone").(string),
+		//QA: data_vip, https://support.huaweicloud.com/api-rds/rds_01_0002.html#:~:text=%E7%BD%91%E5%88%97%E8%A1%A8%E3%80%82-,data_vip,-%E5%90%A6
 		FixedIp:             d.Get("fixed_ip").(string),
 		DiskEncryptionId:    d.Get("volume.0.disk_encryption_id").(string),
 		Collation:           d.Get("collation").(string),
@@ -351,6 +369,7 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 	instanceID := d.Id()
 
 	// wait for order success
+	//QA: 先等待订单完成
 	if res.OrderId != "" {
 		bssClient, err := config.BssV2Client(config.GetRegion(d))
 		if err != nil {
@@ -361,6 +380,7 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 		}
 	}
 
+	//QA: 这里改成先等JobId，再等资源成功？
 	if res.JobId != "" {
 		if err := checkRDSInstanceJobFinish(client, res.JobId, d.Timeout(schema.TimeoutCreate)); err != nil {
 			return diag.Errorf("error creating instance (%s): %s", instanceID, err)
@@ -375,14 +395,17 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 			Delay:        20 * time.Second,
 			PollInterval: 10 * time.Second,
 			// Ensure that the instance is 'ACTIVE', not going to enter 'BACKING UP'.
+			//QA: 什么时候会进入备份？创建完成为什么会进入备份？策略使然？
 			ContinuousTargetOccurence: 2,
 		}
+		//QA: 需要改成WaitForStateContext？
 		if _, err = stateConf.WaitForState(); err != nil {
 			return diag.Errorf("error waiting for RDS instance (%s) creation completed: %s", instanceID, err)
 		}
 	}
 
 	if d.Get("ssl_enable").(bool) {
+		//QA: 当前仅支持mysql实例
 		if isMySQLDatabase(d) {
 			err = configRdsInstanceSSL(d, client, d.Id())
 			if err != nil {
@@ -393,6 +416,7 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 		}
 	}
 
+	//QA: 这里为什么转成map[string]interface{} 不转成 map[string]string？
 	tagRaw := d.Get("tags").(map[string]interface{})
 	if len(tagRaw) > 0 {
 		taglist := utils.ExpandResourceTags(tagRaw)
@@ -436,6 +460,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	d.Set("charging_mode", instance.ChargeInfo.ChargeMode)
 	d.Set("tags", utils.TagsToMap(instance.Tags))
 
+	//QA: publicIps和privateIps两个都是String List，为什么一个interface{},一个string?
 	publicIps := make([]interface{}, len(instance.PublicIps))
 	for i, v := range instance.PublicIps {
 		publicIps[i] = v
@@ -447,11 +472,13 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 		privateIps[i] = v
 	}
 	d.Set("private_ips", privateIps)
+	//QA:创建失败了，为什么还会走到这里，import？
 	// If the creation of the RDS instance is failed, the length of the private IP list will be zero.
 	if len(privateIps) > 0 {
 		d.Set("fixed_ip", privateIps[0])
 	}
 
+	//QA: 这里重写创建了一个volume block
 	volume := make([]map[string]interface{}, 1)
 	volume[0] = map[string]interface{}{
 		"type":               instance.Volume.Type,
@@ -462,6 +489,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 		return diag.Errorf("error saving volume to RDS instance (%s): %s", instanceID, err)
 	}
 
+	//QA: 这里重写创建了一个db block
 	dbList := make([]map[string]interface{}, 1)
 	database := map[string]interface{}{
 		"type":      instance.DataStore.Type,
@@ -477,8 +505,10 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 		return diag.Errorf("error saving data base to RDS instance (%s): %s", instanceID, err)
 	}
 
+	//QA: 这里重写创建了一个backup block
 	backup := make([]map[string]interface{}, 1)
 	backup[0] = map[string]interface{}{
+		//QA: 这里需要根据时区进行更新
 		"start_time": instance.BackupStrategy.StartTime,
 		"keep_days":  instance.BackupStrategy.KeepDays,
 	}
@@ -486,6 +516,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 		return diag.Errorf("error saving backup strategy to RDS instance (%s): %s", instanceID, err)
 	}
 
+	//QA: 创建了nodes列表
 	nodes := make([]map[string]interface{}, len(instance.Nodes))
 	for i, v := range instance.Nodes {
 		nodes[i] = map[string]interface{}{
@@ -501,6 +532,9 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	}
 
 	az1 := instance.Nodes[0].AvailabilityZone
+	//QA: falvor带ha后缀的需要判断是否大于两个availability zone? 我们为什么要加这个逻辑？主要是为了使az的值有序？
+	// 去掉这部分逻辑？
+	//QA:如果接口默认遵循的是第一个是主分区，（也就是说az里边的顺序是有意义的）我们如果改成set就失去了这种默认能力
 	if strings.HasSuffix(d.Get("flavor").(string), ".ha") {
 		if len(instance.Nodes) < 2 {
 			return diag.Errorf("error saving availability zone to RDS instance (%s): "+
@@ -529,6 +563,7 @@ func resourceRdsInstanceUpdate(ctx context.Context, d *schema.ResourceData, meta
 	instanceID := d.Id()
 	// Since the instance will throw an exception when making an API interface call in 'BACKING UP' state,
 	// wait for the instance state to be updated to 'ACTIVE' before calling the interface.
+	//QA: 连续检查几次，确保数据库实例当前的状态是ACTIVE，以防止其突然进入“BACKING UP”，什么时候会进入BACKING UP?
 	stateConf := &resource.StateChangeConf{
 		Target:       []string{"ACTIVE"},
 		Refresh:      rdsInstanceStateRefreshFunc(client, instanceID),
@@ -832,6 +867,7 @@ func updateRdsInstanceBackpStrategy(d *schema.ResourceData, client *golangsdk.Se
 	updateOpts := backups.UpdateOpts{
 		KeepDays:  &keepDays,
 		StartTime: rawMap["start_time"].(string),
+		// QA: 这里的备份策略写死了
 		Period:    "1,2,3,4,5,6,7",
 	}
 
@@ -841,6 +877,7 @@ func updateRdsInstanceBackpStrategy(d *schema.ResourceData, client *golangsdk.Se
 		return fmt.Errorf("error updating RDS instance backup strategy (%s): %s", instanceID, err)
 	}
 
+	// QA: 这里的pending条件是 BACKING UP？
 	stateConf := &resource.StateChangeConf{
 		Pending:      []string{"BACKING UP"},
 		Target:       []string{"ACTIVE"},
@@ -934,6 +971,7 @@ func checkRDSInstanceJobFinish(client *golangsdk.ServiceClient, jobID string, ti
 		Delay:        20 * time.Second,
 		PollInterval: 10 * time.Second,
 	}
+	// QA: 修改废弃函数
 	if _, err := stateConf.WaitForState(); err != nil {
 		return fmt.Errorf("error waiting for RDS instance (%s) job to be completed: %s ", jobID, err)
 	}
@@ -945,6 +983,7 @@ func rdsInstanceJobRefreshFunc(client *golangsdk.ServiceClient, jobID string) re
 		jobOpts := instances.RDSJobOpts{
 			JobID: jobID,
 		}
+		//QA:刷新函数如果出错退出会怎样？
 		jobList, err := instances.GetRDSJob(client, jobOpts).Extract()
 		if err != nil {
 			return nil, "FOUND ERROR", err
@@ -957,6 +996,7 @@ func rdsInstanceJobRefreshFunc(client *golangsdk.ServiceClient, jobID string) re
 func rdsInstanceStateRefreshFunc(client *golangsdk.ServiceClient, instanceID string) resource.StateRefreshFunc {
 	return func() (interface{}, string, error) {
 		instance, err := GetRdsInstanceByID(client, instanceID)
+		//QA: 这里的提示信息需要描述的更清晰一点
 		if err != nil {
 			return nil, "FOUND ERROR", err
 		}
