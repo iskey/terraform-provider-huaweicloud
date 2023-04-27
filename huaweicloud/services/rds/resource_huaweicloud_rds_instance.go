@@ -24,19 +24,7 @@ import (
 )
 
 // ResourceRdsInstance is the impl for huaweicloud_rds_instance resource
-/*
-QA:
-缺少参数：
-创建实例：
-请求参数：
-[dsspool_id](https://support.huaweicloud.com/api-rds/rds_01_0002.html#:~:text=UTC%2B08%3A30%E3%80%82-,dsspool_id,-%E5%90%A6)
-[restore_point](https://support.huaweicloud.com/api-rds/rds_01_0002.html#rds_01_0002__table64243102:~:text=%E7%94%A8%E9%80%97%E5%8F%B7%E9%9A%94%E5%BC%80%E3%80%82-,restore_point,-%E5%90%A6)
-返回值：
-[complete_version](https://support.huaweicloud.com/api-rds/rds_01_0002.html#rds_01_0002__table64243102:~:text=%E7%89%88%E6%9C%AC%E6%8E%A5%E5%8F%A3%E8%8E%B7%E5%8F%96%E3%80%82-,complete_version,-%E5%90%A6)
-*/
 
-//QA: 没有分页处理？ 查询数据库列表接口里边有分页，offset等
-//QA: 数据实例分为单实例，HA实例，只读副本，只读副本是read_replica_instance资源，单实例和HA实例，是否通过ha字段来区分？
 //QA: 如何指定主分区和备份分区？
 func ResourceRdsInstance() *schema.Resource {
 	return &schema.Resource{
@@ -83,7 +71,6 @@ func ResourceRdsInstance() *schema.Resource {
 			},
 
 			"db": {
-				// QA: 这里用了列表，但是只支持一个？
 				Type:     schema.TypeList,
 				Required: true,
 				ForceNew: true,
@@ -166,7 +153,7 @@ func ResourceRdsInstance() *schema.Resource {
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						//QA: 这里的时间会叠加传入的时区，查到的返回值应该使用传入的time_zone进行处理
+						//QA: 这里的时间会叠加传入的时区，查到的返回值应该使用传入的time_zone进行处理，[工单跟一下]
 						"start_time": {
 							Type:     schema.TypeString,
 							Required: true,
@@ -214,7 +201,6 @@ func ResourceRdsInstance() *schema.Resource {
 				ForceNew: true,
 			},
 
-			//QA: 调用数据库安全性接口
 			"ssl_enable": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -323,7 +309,6 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 		SecurityGroupId:     d.Get("security_group_id").(string),
 		ConfigurationId:     d.Get("param_group_id").(string),
 		TimeZone:            d.Get("time_zone").(string),
-		//QA: data_vip, https://support.huaweicloud.com/api-rds/rds_01_0002.html#:~:text=%E7%BD%91%E5%88%97%E8%A1%A8%E3%80%82-,data_vip,-%E5%90%A6
 		FixedIp:             d.Get("fixed_ip").(string),
 		DiskEncryptionId:    d.Get("volume.0.disk_encryption_id").(string),
 		Collation:           d.Get("collation").(string),
@@ -405,7 +390,7 @@ func resourceRdsInstanceCreate(ctx context.Context, d *schema.ResourceData, meta
 	}
 
 	if d.Get("ssl_enable").(bool) {
-		//QA: 当前仅支持mysql实例
+		//QA: 当前仅支持mysql实例,后期看能否去掉这个判断
 		if isMySQLDatabase(d) {
 			err = configRdsInstanceSSL(d, client, d.Id())
 			if err != nil {
@@ -440,6 +425,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	if err != nil {
 		return diag.Errorf("error getting RDS instance: %s", err)
 	}
+	//QA: check deleted
 	if instance.Id == "" {
 		d.SetId("")
 		return nil
@@ -460,7 +446,6 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	d.Set("charging_mode", instance.ChargeInfo.ChargeMode)
 	d.Set("tags", utils.TagsToMap(instance.Tags))
 
-	//QA: publicIps和privateIps两个都是String List，为什么一个interface{},一个string?
 	publicIps := make([]interface{}, len(instance.PublicIps))
 	for i, v := range instance.PublicIps {
 		publicIps[i] = v
@@ -535,6 +520,7 @@ func resourceRdsInstanceRead(ctx context.Context, d *schema.ResourceData, meta i
 	//QA: falvor带ha后缀的需要判断是否大于两个availability zone? 我们为什么要加这个逻辑？主要是为了使az的值有序？
 	// 去掉这部分逻辑？
 	//QA:如果接口默认遵循的是第一个是主分区，（也就是说az里边的顺序是有意义的）我们如果改成set就失去了这种默认能力, 如果第一个是自主分区那（A,B）和（B,A）应该是不同的
+	// 删掉这块逻辑，资源导入时，文档说明az的准确性由使用者来保证，测一下import，随便写一个错误的值，对过程没影响，只是值是错误的。
 	if strings.HasSuffix(d.Get("flavor").(string), ".ha") {
 		if len(instance.Nodes) < 2 {
 			return diag.Errorf("error saving availability zone to RDS instance (%s): "+
@@ -650,6 +636,7 @@ func resourceRdsInstanceDelete(ctx context.Context, d *schema.ResourceData, meta
 	}
 
 	stateConf := &resource.StateChangeConf{
+		// QA 去掉Pending状态，从任何状态到DELETED状态，刷新函数出错直接返回
 		Pending:      []string{"ACTIVE"},
 		Target:       []string{"DELETED"},
 		Refresh:      rdsInstanceStateRefreshFunc(client, id),
@@ -817,6 +804,7 @@ func updateRdsInstanceFlavor(d *schema.ResourceData, config *config.Config, clie
 	}
 
 	stateConf := &resource.StateChangeConf{
+		//QA 统一改黑名单
 		Pending:      []string{"MODIFYING"},
 		Target:       []string{"ACTIVE"},
 		Refresh:      rdsInstanceStateRefreshFunc(client, instanceID),
@@ -843,6 +831,8 @@ func updateRdsInstanceVolumeSize(d *schema.ResourceData, client *golangsdk.Servi
 		},
 	}
 
+	//QA 看一下是否需要处理order，优先级low
+
 	log.Printf("[DEBUG] Enlarge Volume opts: %+v", enlargeOpts)
 	instance, err := instances.EnlargeVolume(client, enlargeOpts, instanceID).Extract()
 	if err != nil {
@@ -851,6 +841,8 @@ func updateRdsInstanceVolumeSize(d *schema.ResourceData, client *golangsdk.Servi
 	if err := checkRDSInstanceJobFinish(client, instance.JobId, d.Timeout(schema.TimeoutUpdate)); err != nil {
 		return fmt.Errorf("error updating instance (%s): %s", instanceID, err)
 	}
+
+	//QA 确认一下是否需要查资源，尽量不改
 
 	return nil
 }
@@ -877,7 +869,7 @@ func updateRdsInstanceBackpStrategy(d *schema.ResourceData, client *golangsdk.Se
 		return fmt.Errorf("error updating RDS instance backup strategy (%s): %s", instanceID, err)
 	}
 
-	// QA: 这里的pending条件是 BACKING UP？
+	// QA: 这里的pending条件是 BACKING UP？这里需要确认一下
 	stateConf := &resource.StateChangeConf{
 		Pending:      []string{"BACKING UP"},
 		Target:       []string{"ACTIVE"},
